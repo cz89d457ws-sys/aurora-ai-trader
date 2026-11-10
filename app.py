@@ -1,6 +1,6 @@
 """AURORA AI TRADER: public Kraken market data and local paper trading only."""
 from __future__ import annotations
-import os, sqlite3, time, math, asyncio, logging
+import os, sqlite3, time, math, asyncio, logging, secrets, base64, binascii
 from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime, timezone
@@ -23,7 +23,41 @@ MAX_OPEN_MARKETS=int(os.getenv('MAX_OPEN_MARKETS','10'))
 AUTO_DEFAULT=os.getenv('AUTO_PAPER_DEFAULT','true').lower() == 'true'
 scan_task=None
 last_action={}
-app=FastAPI(title='AURORA AI TRADER', version='0.2.0')
+app=FastAPI(title='AURORA AI TRADER', version='0.3.0')
+
+@app.middleware('http')
+async def protect_app(request, call_next):
+    # Health checks are intentionally public; every dashboard, static and API route requires Basic Auth.
+    if request.url.path == '/healthz':
+        return await call_next(request)
+    username=os.getenv('AURORA_USERNAME','')
+    password=os.getenv('AURORA_PASSWORD','')
+    if not username or not password:
+        from fastapi.responses import PlainTextResponse
+        return PlainTextResponse('AURORA ist noch nicht konfiguriert: Zugangsdaten fehlen.', status_code=503)
+    auth=request.headers.get('authorization','')
+    valid=False
+    if auth.startswith('Basic '):
+        try:
+            decoded=base64.b64decode(auth[6:], validate=True).decode('utf-8')
+            supplied_user, supplied_password=decoded.split(':',1)
+            valid=secrets.compare_digest(supplied_user,username) and secrets.compare_digest(supplied_password,password)
+        except (ValueError, UnicodeDecodeError, binascii.Error):
+            valid=False
+    if not valid:
+        from fastapi.responses import PlainTextResponse
+        return PlainTextResponse('Anmeldung erforderlich.', status_code=401, headers={'WWW-Authenticate':'Basic realm=\"AURORA AI TRADER\", charset=\"UTF-8\"'})
+    # Prevent cross-site browser form/fetch requests from changing paper-trading state.
+    if request.method in ('POST','PUT','PATCH','DELETE'):
+        origin=request.headers.get('origin')
+        if not origin or origin.rstrip('/') != str(request.base_url).rstrip('/'):
+            from fastapi.responses import PlainTextResponse
+            return PlainTextResponse('Ungültiger Origin für schreibende Anfrage.', status_code=403)
+    return await call_next(request)
+
+@app.get('/healthz')
+def healthz():
+    return {'ok':True}
 
 app.mount('/static', StaticFiles(directory=ROOT/'static'), name='static')
 
@@ -194,3 +228,65 @@ def pause():
         new='0' if current=='1' else '1'
         c.execute("UPDATE state SET value=? WHERE key='paused'",(new,))
     return {'paused':new=='1'}
+
+
+async def auto_scan_loop():
+    """Conservative paper-only scanner. No private Kraken endpoints or real orders."""
+    while True:
+        try:
+            with db() as c:
+                state=dict((r['key'],r['value']) for r in c.execute('SELECT * FROM state'))
+            if state.get('auto_enabled') == '1' and state.get('paused') != '1':
+                all_pairs=(await markets())['pairs']
+                preferred=('BTC/EUR','XBT/EUR','ETH/EUR','SOL/EUR','XRP/EUR','ADA/EUR','LINK/EUR')
+                eur_pairs=[x for x in all_pairs if x.get('quote') in ('ZEUR','EUR')]
+                eur_pairs.sort(key=lambda x:(0 if x.get('name') in preferred else 1,x.get('name','')))
+                selected=eur_pairs[:max(1,MAX_OPEN_MARKETS)]
+                for market in selected:
+                    pair=market['id']
+                    now=time.monotonic()
+                    if now-last_action.get(pair,0) < 900:
+                        continue
+                    try:
+                        sig=await signal(pair,15)
+                        with db() as c:
+                            c.execute('INSERT INTO signals (ts,pair,action,score,detail) VALUES (?,?,?,?,?)',
+                                      (datetime.now(timezone.utc).isoformat(),pair,sig['action'],sig['score'],
+                                       f"RSI={sig['rsi']}; EMA12={sig['ema12']}; EMA26={sig['ema26']}"))
+                            c.execute("UPDATE state SET value=CAST(value AS INTEGER)+1 WHERE key='scan_count'")
+                            pos=c.execute('SELECT quantity FROM positions WHERE pair=?',(pair,)).fetchone()
+                            cash=float(c.execute("SELECT value FROM state WHERE key='cash'").fetchone()[0])
+                        if sig['action']=='BUY' and not pos and cash > 10:
+                            amount=min(MAX_TRADE_EUR,cash/1.004)
+                            await paper_order(Order(pair=pair,side='buy',amount_eur=amount))
+                            last_action[pair]=time.monotonic()
+                        elif sig['action']=='SELL' and pos:
+                            t=await ticker(pair)
+                            amount=min(MAX_TRADE_EUR,pos['quantity']*t['bid'])
+                            if amount > 1:
+                                await paper_order(Order(pair=pair,side='sell',amount_eur=amount))
+                                last_action[pair]=time.monotonic()
+                    except Exception as exc:
+                        log.warning('Auto-Paper scan failed for %s: %s',pair,exc)
+        except Exception:
+            log.exception('Auto-Paper scan cycle failed')
+        await asyncio.sleep(max(30,AUTO_INTERVAL))
+
+@app.on_event('startup')
+async def start_auto_scanner():
+    global scan_task
+    # Fail closed: do not run the background trader unless credentials are configured.
+    if not os.getenv('AURORA_USERNAME') or not os.getenv('AURORA_PASSWORD'):
+        log.error('AURORA_USERNAME/AURORA_PASSWORD fehlen; Auto-Paper-Scanner bleibt deaktiviert.')
+        return
+    scan_task=asyncio.create_task(auto_scan_loop())
+
+@app.on_event('shutdown')
+async def stop_auto_scanner():
+    global scan_task
+    if scan_task:
+        scan_task.cancel()
+        try:
+            await scan_task
+        except asyncio.CancelledError:
+            pass
