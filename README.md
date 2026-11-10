@@ -1,48 +1,35 @@
-# AURORA AI TRADER — MVP 0.1
+# AURORA AI TRADER 0.2 — Paper Trading only
 
-Deutschsprachige, lokal ausführbare Web-App für **öffentliche Kraken-Marktdaten**, technische Signale und **ausschließlich simuliertes Paper-Trading**. Keine API-Schlüssel nötig; es existiert **kein Code für Echtgeldorders**.
+## Funktionen
+- Öffentliche Kraken-Spot-Marktdaten (kein Kraken-Konto/API-Key nötig)
+- EUR-Spotmärkte, bevorzugt BTC, ETH, SOL, XRP, ADA und LINK
+- Technische Heuristik: EMA 12/26, RSI 14 und 5-Kerzen-Momentum
+- Automatischer Paper-Scanner mit bis zu 10 EUR-Märkten
+- Virtuelle Orders, SQLite-Portfolio und Signalhistorie
+- Startkapital 10.000 EUR; maximal 200 EUR je automatischem Einstieg (konfigurierbar)
+- Automatik kann im Dashboard deaktiviert werden; separate Paper-Pause
 
-## Starten
-
-Python 3.12+ installieren. Im entpackten Projektordner:
+## Lokal starten
+Python 3.11+ empfohlen.
 
 ```bash
 python -m venv .venv
-# Windows:
-.venv\Scripts\activate
-# macOS / Linux:
-source .venv/bin/activate
+source .venv/bin/activate  # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 uvicorn app:app --host 127.0.0.1 --port 8000
 ```
+Öffne http://127.0.0.1:8000
 
-Danach im Browser `http://127.0.0.1:8000` öffnen.
+## Render-Konfiguration
+- Build: `pip install -r requirements.txt`
+- Start: `uvicorn app:app --host 0.0.0.0 --port $PORT`
+- Für dauerhafte SQLite-Daten: Render Persistent Disk mounten und `AURORA_DB=/var/data/aurora.db` setzen; alternativ PostgreSQL implementieren.
+- Setze `AUTO_PAPER_DEFAULT=true`, `AUTO_INTERVAL_SECONDS=60`, `MAX_TRADE_EUR=200`, `MAX_OPEN_MARKETS=10`.
+- Ein kostenloser/ephemerer Web-Service ist nicht für zuverlässiges 24/7-Trading geeignet.
 
-## Was funktioniert?
-- Öffentliche Kraken-REST-Daten: handelbare Märkte, Ticker und OHLC-Kerzen
-- EUR-Spot-Märkte, Suche über die Auswahlliste
-- EMA 12/26, RSI 14, 5-Kerzen-Momentum, erklärbarer Signal-Score
-- Virtuelle Kauf- und Verkaufsorders, virtuelle Positionen und Historie
-- SQLite-Speicherung im lokalen Projektordner (`aurora.db`)
-- Pause/Fortsetzen von Paper-Trading
-- Mobilfreundliche deutschsprachige Oberfläche
+## Wichtige Grenzen / Sicherheit
+**Ausschließlich Paper-Trading.** Es gibt keine Kraken-Privat-API, keine Echtgeldorders und keine Gewinnzusage. Die „KI“ ist aktuell eine transparente technische Regelheuristik, kein trainiertes ML-Modell.
 
-## Grenzen
-- **Kein trainiertes KI-Modell**: Der Signal-Score ist eine einfache Indikatorheuristik und nicht als Gewinnwahrscheinlichkeit zu verstehen.
-- **Keine automatische Orderstrategie** und keine Echtgeldanbindung.
-- **Keine Benutzeranmeldung**: Nur lokal an `127.0.0.1` betreiben, nicht ungeschützt ins Internet stellen.
-- Simulierte Orderausführung zu öffentlichem Bid/Ask plus pauschal 0,1 % Slippage und 0,4 % Gebühren. Keine echte Orderbuchausführung, Teilausführung oder markt-/volumenabhängige Gebühr.
-- Cash und Positionskosten werden angezeigt, noch keine vollständige mark-to-market Bewertung oder PnL.
-- Kein Backtesting, keine Modellvalidierung, keine produktionsreifen Risikolimits.
-- Kraken API/Marktverfügbarkeit und Netzwerkverbindung können sich ändern.
+Vor öffentlicher Bereitstellung sind Authentifizierung/Autorisierung, CSRF-Schutz, Rate-Limits, sichere Session-Verwaltung, Datenbankmigrationen, Monitoring und Tests zu ergänzen. Die API ist in diesem Entwicklungsstand nicht für ungeschützte öffentliche Bereitstellung freigegeben. Verwende keine API-Schlüssel im Repository.
 
-## Roadmap
-1. Automatische Tests, Fehlerfälle, lokale Order- und Portfolioabgleiche
-2. Preisverlauf und Portfolio-Mark-to-Market, PnL und Gebührenmodell
-3. Historische Datenpipeline, Backtesting, Walk-forward-Tests
-4. Kalibrierte ML-Modelle gegen einfache Baselines, Driftüberwachung
-5. WebSocket-Livefeed, robuste Wiederverbindung, Rate-Limits
-6. Authentifizierung, HTTPS, verschlüsselte Secrets, Audit-Logs
-7. Erst nach gesonderter Sicherheitsprüfung und ausdrücklicher Freigabe: Echtgeldmodul
-
-Keine Anlageberatung und keine Garantie für Profit.
+Die Strategie ist experimentell. RSI/EMA-Signale können Verluste erzeugen; Backtests und Paper-Ergebnisse sind keine Garantie für zukünftige Resultate.

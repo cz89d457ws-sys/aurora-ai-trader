@@ -1,0 +1,22 @@
+services:
+  - type: web
+    name: aurora-ai-trader
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    disk:
+      name: aurora-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: AURORA_DB
+        value: /var/data/aurora.db
+      - key: AUTO_PAPER_DEFAULT
+        value: "true"
+      - key: AUTO_INTERVAL_SECONDS
+        value: "60"
+      - key: MAX_TRADE_EUR
+        value: "200"
+      - key: MAX_OPEN_MARKETS
+        value: "10"

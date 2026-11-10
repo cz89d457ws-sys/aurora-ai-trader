@@ -1,6 +1,6 @@
 """AURORA AI TRADER: public Kraken market data and local paper trading only."""
 from __future__ import annotations
-import os, sqlite3, time, math
+import os, sqlite3, time, math, asyncio, logging
 from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime, timezone
@@ -14,7 +14,17 @@ ROOT=Path(__file__).resolve().parent
 DB=Path(os.getenv('AURORA_DB', str(ROOT/'aurora.db')))
 KRAKEN='https://api.kraken.com/0/public'
 START=10000.0
-app=FastAPI(title='AURORA AI TRADER', version='0.1.0')
+
+logging.basicConfig(level=os.getenv('LOG_LEVEL','INFO'))
+log=logging.getLogger('aurora')
+AUTO_INTERVAL=int(os.getenv('AUTO_INTERVAL_SECONDS','60'))
+MAX_TRADE_EUR=float(os.getenv('MAX_TRADE_EUR','200'))
+MAX_OPEN_MARKETS=int(os.getenv('MAX_OPEN_MARKETS','10'))
+AUTO_DEFAULT=os.getenv('AUTO_PAPER_DEFAULT','true').lower() == 'true'
+scan_task=None
+last_action={}
+app=FastAPI(title='AURORA AI TRADER', version='0.2.0')
+
 app.mount('/static', StaticFiles(directory=ROOT/'static'), name='static')
 
 @contextmanager
@@ -31,8 +41,11 @@ def init_db():
         c.execute('CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
         c.execute('CREATE TABLE IF NOT EXISTS trades (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, pair TEXT NOT NULL, side TEXT NOT NULL, quantity REAL NOT NULL, price REAL NOT NULL, fee REAL NOT NULL)')
         c.execute('CREATE TABLE IF NOT EXISTS positions (pair TEXT PRIMARY KEY, quantity REAL NOT NULL, cost REAL NOT NULL)')
+        c.execute('CREATE TABLE IF NOT EXISTS signals (id INTEGER PRIMARY KEY AUTOINCREMENT, ts TEXT NOT NULL, pair TEXT NOT NULL, action TEXT NOT NULL, score REAL NOT NULL, detail TEXT NOT NULL)')
         c.execute("INSERT OR IGNORE INTO state VALUES ('cash', ?)", (str(START),))
         c.execute("INSERT OR IGNORE INTO state VALUES ('paused', '0')")
+        c.execute("INSERT OR IGNORE INTO state VALUES ('auto_enabled', ?)", ('1' if AUTO_DEFAULT else '0',))
+        c.execute("INSERT OR IGNORE INTO state VALUES ('scan_count', '0')")
 init_db()
 
 async def kraken(endpoint, params=None):
@@ -53,7 +66,7 @@ def index(): return FileResponse(ROOT/'static'/'index.html')
 def status():
     with db() as c:
         s=dict((r['key'],r['value']) for r in c.execute('SELECT * FROM state'))
-    return {'mode':'PAPER_ONLY','starting_capital':START,'cash':float(s['cash']),'paused':s['paused']=='1','live_trading_enabled':False,'data_source':'Kraken public REST; not connected to account'}
+    return {'mode':'PAPER_ONLY','starting_capital':START,'cash':float(s['cash']),'paused':s['paused']=='1','live_trading_enabled':False,'auto_paper_enabled':s.get('auto_enabled')=='1','scan_count':int(s.get('scan_count','0')),'scan_interval_seconds':AUTO_INTERVAL,'max_markets':MAX_OPEN_MARKETS,'max_trade_eur':MAX_TRADE_EUR,'data_source':'Kraken public REST; not connected to account'}
 
 @app.get('/api/markets')
 async def markets():
@@ -150,6 +163,21 @@ async def paper_order(order:Order):
         else: c.execute('INSERT INTO positions VALUES (?,?,?) ON CONFLICT(pair) DO UPDATE SET quantity=excluded.quantity,cost=excluded.cost',(order.pair,new_qty,new_cost))
         c.execute('INSERT INTO trades (ts,pair,side,quantity,price,fee) VALUES (?,?,?,?,?,?)',(datetime.now(timezone.utc).isoformat(),order.pair,order.side,qty,effective,fee))
     return {'success':True,'mode':'PAPER','side':order.side,'quantity':qty,'effective_price':effective,'fee':fee,'cash':new_cash,'note':'Simulierte Ausführung; angenommene Gebühr 0,4 % und Slippage 0,1 %'}
+
+@app.get('/api/paper/signals')
+def recent_signals():
+    with db() as c:
+        rows=[dict(r) for r in c.execute('SELECT * FROM signals ORDER BY id DESC LIMIT 50')]
+    return {'signals':rows}
+
+class AutoSetting(BaseModel):
+    enabled: bool
+
+@app.post('/api/paper/auto')
+def set_auto(setting:AutoSetting):
+    with db() as c:
+        c.execute("UPDATE state SET value=? WHERE key='auto_enabled'",('1' if setting.enabled else '0',))
+    return {'auto_paper_enabled':setting.enabled,'live_trading_enabled':False}
 
 @app.get('/api/paper/portfolio')
 def portfolio():
