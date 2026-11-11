@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#101827"><title>AURORA AI TRADER</title>
+<style>
+:root{color-scheme:dark;--bg:#0b1220;--panel:#121d2e;--line:#26364c;--muted:#9aabc1;--text:#edf4ff;--green:#35d39a;--red:#ff7185;--blue:#7cb7ff}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font:15px system-ui,-apple-system,Segoe UI,sans-serif}
+header{padding:22px max(16px,calc((100% - 1100px)/2));background:#101a2a;border-bottom:1px solid var(--line);display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+h1{font-size:21px;margin:0;letter-spacing:.08em}header small{color:var(--muted)}main{max-width:1100px;margin:22px auto;padding:0 16px 50px}
+.row{display:flex;gap:10px;align-items:center;flex-wrap:wrap}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin:16px 0}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:16px;min-width:0}
+.kicker{color:var(--muted);font-size:12px;text-transform:uppercase;letter-spacing:.07em}.value{font-size:25px;font-weight:700;margin-top:7px;font-variant-numeric:tabular-nums}
+h2{font-size:18px;margin:25px 0 10px}.muted{color:var(--muted)}.positive{color:var(--green)}.negative{color:var(--red)}.pill{border:1px solid var(--line);border-radius:99px;padding:5px 10px;font-size:12px;color:var(--muted)}button{background:#1d5eaa;color:white;border:0;border-radius:9px;padding:10px 14px;font-weight:650}button.secondary{background:#26364c}button:disabled{opacity:.5}
+table{width:100%;border-collapse:collapse;min-width:720px}th,td{text-align:right;padding:11px 9px;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}th:first-child,td:first-child{text-align:left}th{font-size:12px;color:var(--muted);font-weight:600}
+.table-wrap{overflow-x:auto}.empty{padding:22px;text-align:center;color:var(--muted)}.note{font-size:12px;color:var(--muted);line-height:1.5}.error{color:var(--red);white-space:pre-wrap}.topnote{margin:12px 0;padding:11px 13px;background:#15243a;border:1px solid var(--line);border-radius:10px}
+@media(max-width:600px){header{padding:16px}main{margin:14px auto}.value{font-size:22px}}
+</style>
+</head>
+<body>
+<header><div><h1>AURORA AI TRADER</h1><small>Kraken-Marktdaten · ausschließlich Paper-Trading</small></div><div class="row"><span class="pill" id="mode">VERBINDE …</span><button class="secondary" id="refresh">Aktualisieren</button></div></header>
+<main>
+<div class="topnote" id="notice">Lade Kontostand und offene Positionen …</div>
+<div class="grid">
+ <section class="card"><div class="kicker">Virtuelles Startkapital</div><div class="value" id="starting">–</div></section>
+ <section class="card"><div class="kicker">Paper-Guthaben (Cash)</div><div class="value" id="cash">–</div></section>
+ <section class="card"><div class="kicker">Aktuell investiert (Einstand inkl. Gebühren)</div><div class="value" id="invested">–</div></section>
+ <section class="card"><div class="kicker">Aktueller Wert offener Positionen</div><div class="value" id="marketvalue">–</div></section>
+ <section class="card"><div class="kicker">Offener Gewinn / Verlust</div><div class="value" id="totalpnl">–</div><div class="muted" id="totalpct">–</div></section>
+ <section class="card"><div class="kicker">Paper-Gesamtwert (Cash + Positionen)</div><div class="value" id="equity">–</div></section>
+</div>
+<h2>Offene Trades – Gewinn und Verlust</h2>
+<div class="card table-wrap"><table><thead><tr><th>Markt</th><th>Coins</th><th>Investiert</th><th>Aktueller Kurs</th><th>Aktueller Wert</th><th>G/V €</th><th>G/V %</th></tr></thead><tbody id="positions"><tr><td colspan="7" class="empty">Lade Positionen …</td></tr></tbody></table></div>
+<h2>Letzte Paper-Ausführungen</h2>
+<div class="card table-wrap"><table><thead><tr><th>Zeit</th><th>Markt</th><th>Seite</th><th>Menge</th><th>Ausführungskurs</th><th>Gebühr</th></tr></thead><tbody id="trades"><tr><td colspan="6" class="empty">Lade Historie …</td></tr></tbody></table></div>
+<p class="note">Berechnung offener Positionen: aktueller Verkaufskurs (Bid) × Coin-Menge minus anteilige Einstandskosten. Prozent = Gewinn/Verlust ÷ Einstandskosten. Die Schätzung berücksichtigt den beim Kauf gespeicherten Gebührenanteil; eine zusätzliche mögliche Verkaufsgebühr/Slippage ist nicht abgezogen. Geschlossene Trades werden in dieser API-Historie nicht mit realisiertem Gesamt-G/V ausgewiesen. Es werden keine echten Kraken-Orders platziert.</p>
+<p class="note" id="updated">Noch nicht aktualisiert.</p>
+</main>
+<script>
+const $=id=>document.getElementById(id);
+const euro=n=>Number(n||0).toLocaleString('de-DE',{style:'currency',currency:'EUR'});
+const num=n=>Number(n||0).toLocaleString('de-DE',{maximumFractionDigits:8});
+const pct=n=>(Number(n)||0).toLocaleString('de-DE',{minimumFractionDigits:2,maximumFractionDigits:2})+' %';
+function setMoney(id,n){$(id).textContent=euro(n)}
+function pnlClass(el,n){el.classList.remove('positive','negative');el.classList.add(n>=0?'positive':'negative')}
+async function get(url){const r=await fetch(url,{cache:'no-store',credentials:'same-origin'});if(!r.ok){let t=await r.text();throw new Error(`${r.status} ${r.statusText}: ${t.slice(0,180)}`)}return r.json()}
+async function refresh(){
+ $('notice').textContent='Aktualisiere Paper-Konto und Kurse …';$('refresh').disabled=true;
+ try{
+  const [status,portfolio]=await Promise.all([get('/api/status'),get('/api/paper/portfolio')]);
+  const rows=await Promise.all((portfolio.positions||[]).map(async p=>{
+    try{const t=await get('/api/ticker/'+encodeURIComponent(p.pair));return {...p,ticker:t}}catch(e){return {...p,ticker:null}}
+  }));
+  let invested=0,market=0;
+  const rendered=rows.map(p=>{
+    const cost=Number(p.cost)||0,qty=Number(p.quantity)||0,bid=p.ticker?.bid;
+    const value=Number.isFinite(bid)?qty*bid:null;
+    const profit=value===null?null:value-cost;
+    const percent=profit===null||cost<=0?null:profit/cost*100;
+    invested+=cost;if(value!==null)market+=value;
+    const name=p.pair;
+    return `<tr><td>${name}</td><td>${num(qty)}</td><td>${euro(cost)}</td><td>${bid===undefined?'–':euro(bid)}</td><td>${value===null?'Kurs nicht verfügbar':euro(value)}</td><td class="${profit===null?'':profit>=0?'positive':'negative'}">${profit===null?'–':(profit>=0?'+':'')+euro(profit)}</td><td class="${percent===null?'':percent>=0?'positive':'negative'}">${percent===null?'–':(percent>=0?'+':'')+pct(percent)}</td></tr>`;
+  });
+  $('positions').innerHTML=rendered.length?rendered.join(''):'<tr><td colspan="7" class="empty">Keine offenen Paper-Positionen.</td></tr>';
+  const cash=Number(portfolio.cash)||0,pnl=market-invested,equity=cash+market;
+  setMoney('starting',portfolio.starting_capital);setMoney('cash',cash);setMoney('invested',invested);setMoney('marketvalue',market);
+  setMoney('totalpnl',pnl);pnlClass($('totalpnl'),pnl);$('totalpct').textContent=invested>0?pct(pnl/invested*100):'0,00 %';
+  pnlClass($('totalpct'),pnl);setMoney('equity',equity);
+  $('mode').textContent=status.mode==='PAPER_ONLY'?'PAPER · KEIN ECHTHANDEL':status.mode;
+  $('notice').textContent=`Auto-Paper: ${status.auto_paper_enabled?'aktiv':'aus'} · Scanner: ${status.scan_count} Scans · ${status.scan_interval_seconds}s Intervall.`;
+  const trades=portfolio.trades||[];
+  $('trades').innerHTML=trades.length?trades.map(t=>`<tr><td>${new Date(t.ts).toLocaleString('de-DE')}</td><td>${t.pair}</td><td>${String(t.side).toUpperCase()}</td><td>${num(t.quantity)}</td><td>${euro(t.price)}</td><td>${euro(t.fee)}</td></tr>`).join(''):'<tr><td colspan="6" class="empty">Noch keine Ausführungen.</td></tr>';
+  $('updated').textContent='Zuletzt aktualisiert: '+new Date().toLocaleString('de-DE')+' · Preise basieren auf Kraken Public Ticker.';
+ }catch(e){$('notice').textContent='Fehler beim Laden: '+e.message;$('notice').classList.add('error')}
+ finally{$('refresh').disabled=false}
+}
+$('refresh').addEventListener('click',refresh);refresh();setInterval(refresh,60000);
+</script>
+</body></html>
